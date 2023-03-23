@@ -375,6 +375,55 @@ class StreetViewExtractor:
     y2 = image_height/2 - image_height/math.pi*(
       math.atan2(height-self.google_car_camera_height, z) + pitch)
     return x1, y1, x2, y2
+  
+  def geoCoords_to_sViewFov_bbox(self, pano, lat, lng, fov=80, object_dims = [0,0], height=0):
+    """
+    For a given street view panorama, suppose we want to look at an object at geographic
+    location lat, lng at a given height above the ground plane.  Return the appropriate
+    streetview bounding box location
+    :param pano (dict): meta-data for the street view panorama location
+    :param lat (float): latitude
+    :param lng (float): longitude
+    :param height (float): height in meters of the object above the ground plane
+    :param fov (int): field of view, in this dataset will have three values - 40, 80 (default), 110.
+    :param object_dims (width,height): The dimensions (in meters) of the object of interest.
+    :return: x1 (float), y1 (float), x2 (float), y2 (float): bounding box in the streetview
+    image
+    """
+    
+    max_zoom = int(pano['Location']['zoomLevels'])
+    pitch = 0
+    yaw = float(pano['Projection']['pano_yaw_deg'])*math.pi/180
+    lat1 = float(pano['Location']['original_lat'])
+    lng1 = float(pano['Location']['original_lng'])
+
+    # Suppose the camera is at x=0, y=0, and the y-axis points north, and the x-axis points 
+    # east. Compute the position (dx,dy) corresponding to (lat,lng).  
+    # dy=math.sin(lat-lat1)*EARTH_RADIUS.  dx=math.cos(lat1)*math.sin(lng-lng1)*EARTH_RADIUS.
+    # math.atan2(dx, dy) is then the clockwise angle from north, which sits in the center of 
+    # the panorama image (if the panorama image is first shifted by yaw degrees, such that 
+    # north is in the center of the image).
+    dx = math.cos(math.radians(lat1))*math.sin(math.radians(lng-lng1))
+    dy = math.sin(math.radians(lat-lat1))
+    look_at_angle = math.pi + math.atan2(dx, dy) - yaw  
+    while look_at_angle > 2*math.pi: look_at_angle = look_at_angle-2*math.pi
+    while look_at_angle < 0: look_at_angle = look_at_angle+2*math.pi
+    z = math.sqrt(dx*dx+dy*dy)*EARTH_RADIUS
+
+    down = int(math.pow(2,max_zoom-self.streetview_zoom))  # downsample amount
+    image_width = int(pano['Data']['image_width'] * np.radians(fov) /(2 * down * math.pi))
+    image_height = int(pano['Data']['image_height'] * np.radians(fov) /(2 * down * math.pi))
+    
+    # Return a bounding box around the appropriate location in a streetview pixel 
+    # corresponding to lat,lng
+    x1 = image_width*(math.atan2(-object_dims[0]/2, z)+look_at_angle)/(2*math.pi)
+    x2 = image_width*(math.atan2(object_dims[0]/2, z)+look_at_angle)/(2*math.pi)
+    y1 = image_height/2 - image_height/math.pi*(
+      math.atan2(height + object_dims[1]-self.google_car_camera_height, z) + pitch)
+    y2 = image_height/2 - image_height/math.pi*(
+      math.atan2(height-self.google_car_camera_height, z) + pitch)
+    
+    return x1, y1, x2, y2
 
   def pixel_height(self, pano, lat, lng, dTreeTH = 20, imgShow = None):
         
