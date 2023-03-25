@@ -206,7 +206,7 @@ def evaluate(model, val_loader):
     outputs = [model.validation_step(batch) for batch in val_loader]
     return model.validation_epoch_end(outputs)
 
-def fit(epochs, lr, model, train_loader, val_loader, opt_func=torch.optim.SGD, cpPath = None):
+def fit(epochs, lr, model, train_loader, val_loader, scheduler, opt_func=torch.optim.SGD, cpPath = None):
 
     history = []
     optimizer = opt_func(model.parameters(), lr)
@@ -232,15 +232,18 @@ def fit(epochs, lr, model, train_loader, val_loader, opt_func=torch.optim.SGD, c
         'epoch': epoch + 1,
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
+        'scheduler_state_dict': scheduler.state_dict(),
         'loss': loss,
         'history': history
         # add any other information you want to save
         }
 
         torch.save(checkpoint, cpNameGen(cpPath, eNo=epoch))
+        scheduler.step()
+
     return history
 
-def continue_fit(epochs, lr, model, train_loader, val_loader,optFunc=None, cpPath = None, startEpoch = 0):
+def continue_fit(epochs, lr, model, train_loader, val_loader, scheduler, optFunc=None, cpPath = None, startEpoch = 0):
     history = []
     if optFunc is None:
         optimizer = torch.optim.SGD(model.parameters(), lr)
@@ -267,21 +270,25 @@ def continue_fit(epochs, lr, model, train_loader, val_loader,optFunc=None, cpPat
         'epoch': epoch + 1,
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
+        'scheduler_state_dict': scheduler.state_dict(),
         'loss': loss,
         'history': history
         # add any other information you want to save
         }
 
         torch.save(checkpoint, cpNameGen(cpPath, eNo=epoch))
+        scheduler.step()
+        
     return history
 
 
-def load_cp(cpPath, model, optimizer):
+def load_cp(cpPath, model, optimizer, scheduler=None):
 
     checkpoint = torch.load(cpPath)
 
     model.load_state_dict(checkpoint['model_state_dict'])
     optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    scheduler.load_state_dict(checkpoint['scheduler_state_dict']) if scheduler is not None else None
     epoch = checkpoint['epoch']
     loss = checkpoint['loss']
     history = checkpoint.get('history')
