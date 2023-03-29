@@ -402,21 +402,21 @@ class StreetViewExtractor:
     look_at_angle = math.pi + math.atan2(dx, dy) - yaw  
     if look_at_angle > 2*math.pi: look_at_angle = look_at_angle % (2*math.pi)
     if look_at_angle < 0: look_at_angle = (look_at_angle  % (2*math.pi)) + (2*math.pi)
+    z = math.sqrt(dx*dx+dy*dy)*EARTH_RADIUS
 
-    down = int(math.pow(2,max_zoom-self.streetview_zoom))  # downsample amount
+    down = math.pow(2,max_zoom-self.streetview_zoom)  # downsample amount
     image_width = int(pano['Data']['image_width'])/down
-    image_height = int(pano['Data']['image_height'])/down
     fov_width = math.radians(fov)
     lookAngle_width= math.radians(look_at_angle)
-    thick = int(image_width*((fov_width + lookAngle_width)/(2*math.pi)))
-
+    thick = image_width*((fov_width + lookAngle_width)/(2*math.pi))
+    
     thick += 0 if thick % 2 == 0 else  1
     
     # Return a bounding box around the appropriate location in a streetview pixel 
     # corresponding to lat,lng
     x1 = x_center - 0.5*thick
     x2 = x_center + 0.5*thick
-    y1 = (y_center - thick) if (y_center - thick) < 0 else 0
+    y1 = (y_center - thick) if (y_center - thick) > 0 else 0
     y2 = y_center
     
     return x1, y1, x2, y2
