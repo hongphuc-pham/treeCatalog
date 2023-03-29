@@ -274,8 +274,8 @@ class StreetViewExtractor:
     dx = math.cos(math.radians(lat1))*math.sin(math.radians(lng-lng1))
     dy = math.sin(math.radians(lat-lat1))
     look_at_angle = math.pi + math.atan2(dx, dy) - yaw  
-    while look_at_angle > 2*math.pi: look_at_angle = look_at_angle-2*math.pi
-    while look_at_angle < 0: look_at_angle = look_at_angle+2*math.pi
+    if look_at_angle > 2*math.pi: look_at_angle = look_at_angle % (2*math.pi)
+    if look_at_angle < 0: look_at_angle = (look_at_angle  % (2*math.pi)) + (2*math.pi)
     z = math.sqrt(dx*dx+dy*dy)*EARTH_RADIUS
 
     down = int(math.pow(2,max_zoom-self.streetview_zoom))  # downsample amount
@@ -352,8 +352,8 @@ class StreetViewExtractor:
     dx = math.cos(math.radians(lat1))*math.sin(math.radians(lng-lng1))
     dy = math.sin(math.radians(lat-lat1))
     look_at_angle = math.pi + math.atan2(dx, dy) - yaw  
-    while look_at_angle > 2*math.pi: look_at_angle = look_at_angle-2*math.pi
-    while look_at_angle < 0: look_at_angle = look_at_angle+2*math.pi
+    if look_at_angle > 2*math.pi: look_at_angle = look_at_angle % (2*math.pi)
+    if look_at_angle < 0: look_at_angle = (look_at_angle  % (2*math.pi)) + (2*math.pi)
     z = math.sqrt(dx*dx+dy*dy)*EARTH_RADIUS
 
     down = int(math.pow(2,max_zoom-self.streetview_zoom))  # downsample amount
@@ -386,7 +386,97 @@ class StreetViewExtractor:
     """
     
     max_zoom = int(pano['Location']['zoomLevels'])
-    pitch = 0
+    yaw = float(pano['Projection']['pano_yaw_deg'])*math.pi/180
+    lat1 = float(pano['Location']['original_lat'])
+    lng1 = float(pano['Location']['original_lng'])
+
+    ## Getting the center point of pano
+    """
+    x is in the center BUT y is at the bottom (same value with y of the bottom right corner)
+    """
+    x_center, y_center = self.geo_coords_to_streetview_pixel(pano, lat, lng, height)
+
+    ### ENU coordinator to cylinderical coordinate
+    dx = math.cos(math.radians(lat1))*math.sin(math.radians(lng-lng1))
+    dy = math.sin(math.radians(lat-lat1))
+    look_at_angle = math.pi + math.atan2(dx, dy) - yaw  
+    if look_at_angle > 2*math.pi: look_at_angle = look_at_angle % (2*math.pi)
+    if look_at_angle < 0: look_at_angle = (look_at_angle  % (2*math.pi)) + (2*math.pi)
+
+    down = int(math.pow(2,max_zoom-self.streetview_zoom))  # downsample amount
+    image_width = int(pano['Data']['image_width'])/down
+    image_height = int(pano['Data']['image_height'])/down
+    fov_width = math.radians(fov)
+    lookAngle_width= math.radians(look_at_angle)
+    thick = int(image_width*((fov_width + lookAngle_width)/(2*math.pi)))
+
+    thick += 0 if thick % 2 == 0 else  1
+    
+    # Return a bounding box around the appropriate location in a streetview pixel 
+    # corresponding to lat,lng
+    x1 = x_center - 0.5*thick
+    x2 = x_center + 0.5*thick
+    y1 = (y_center - thick) if (y_center - thick) < 0 else 0
+    y2 = y_center
+    
+    return x1, y1, x2, y2
+
+  def pixel_height(self, pano, lat, lng, dTreeTH = 20, imgShow = None):
+        
+        """
+        pano (dict): meta-data for the street view panorama location
+        lat (float): latitude
+        lng (float): longitude
+        dTreeTH (int): desired maximum detection bounding boxes for tree
+        """
+        
+        full_pano_image = os.path.join(self.dataset_dir, "streetview", 
+                                                pano['Location']['panoId'] + "_z2.jpg")
+        
+        #print(self.geo_coords_to_streetview_pixel(pano, lat, lng, height=1))
+       
+        # Segmentation map
+        seg_map = inference_segmentor(MODEL, full_pano_image)
+
+        ## process the to generate mask of tree only - class is 8 (consistence)
+        maskMap = (np.array(seg_map)[0] == 8).astype(int)
+        maskImg = np.array((maskMap*255),dtype= 'u1') #Convert data to unit8 for image handling
+        grayImage = cv2.cvtColor(maskImg, cv2.COLOR_GRAY2BGR)
+        
+        #get threshold image
+        # ret,thresh_img = cv2.threshold(grayImage, 1, 255, 0)
+        contours, hierarchy = cv2.findContours(maskMap.astype('u1'), cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        
+        treeThresh = len(contours) - 1 if len(contours) < dTreeTH else dTreeTH
+        boxImg, bndBoxes = draw_bounding_box(contours, grayImage, treeThresh)
+        #plt.figure(figsize = (20,10))
+        #plt.imshow(boxImg, cmap='gray')
+        
+        ### >>>>>>>>>>>>>>>>>GET pixel point on image
+        coveredBoxes = find_bbox(bndBoxes,self.geo_coords_to_streetview_pixel(pano, lat, lng))
+        
+        #Simple version of height gettting -- INPROGRESS to update the choice
+        #height = height_estimate(pano, lat, lng, coveredBoxes)
+        
+        return pxHeight_extract(coveredBoxes)[0][0]
+
+  def physical_height_cal(self, pano, lat, lng, dTreeTH = 20, gHeight=0):
+    """
+    For a given street view panorama, suppose we want to look at an object at geographic
+    location lat, lng at a given height above the ground plane.  Return the appropriate
+    streetview bounding box location
+    pano (dict): meta-data for the street view panorama location
+    lat (float): latitude
+    lng (float): longitude
+    pixelH (int): height in pixel of the object on image base on the bounding box
+	  gHeight (float): height in meters of the object above the ground plane
+	  --------------------------------------------
+    RETURN: dist - distance from camera to the object (meters), pixel height, and physical height (meters) base on the pixel height
+    image
+    """
+    pixelH = self.pixel_height(pano, lat, lng)
+
+    max_zoom = int(pano['Location']['zoomLevels'])
     yaw = float(pano['Projection']['pano_yaw_deg'])*math.pi/180
     lat1 = float(pano['Location']['original_lat'])
     lng1 = float(pano['Location']['original_lng'])
@@ -400,24 +490,19 @@ class StreetViewExtractor:
     dx = math.cos(math.radians(lat1))*math.sin(math.radians(lng-lng1))
     dy = math.sin(math.radians(lat-lat1))
     look_at_angle = math.pi + math.atan2(dx, dy) - yaw  
-    while look_at_angle > 2*math.pi: look_at_angle = look_at_angle-2*math.pi
-    while look_at_angle < 0: look_at_angle = look_at_angle+2*math.pi
+    if look_at_angle > 2*math.pi: look_at_angle = look_at_angle % (2*math.pi)
+    if look_at_angle < 0: look_at_angle = (look_at_angle  % (2*math.pi)) + (2*math.pi)
     z = math.sqrt(dx*dx+dy*dy)*EARTH_RADIUS
 
     down = int(math.pow(2,max_zoom-self.streetview_zoom))  # downsample amount
-    image_width = int(pano['Data']['image_width'] * np.radians(fov) /(2 * down * math.pi))
-    image_height = int(pano['Data']['image_height'] * np.radians(fov) /(2 * down * math.pi))
+    image_height = int(pano['Data']['image_height'])/down
     
-    # Return a bounding box around the appropriate location in a streetview pixel 
-    # corresponding to lat,lng
-    x1 = image_width*(math.atan2(-object_dims[0]/2, z)+look_at_angle)/(2*math.pi)
-    x2 = image_width*(math.atan2(object_dims[0]/2, z)+look_at_angle)/(2*math.pi)
-    y1 = image_height/2 - image_height/math.pi*(
-      math.atan2(height + object_dims[1]-self.google_car_camera_height, z) + pitch)
-    y2 = image_height/2 - image_height/math.pi*(
-      math.atan2(height-self.google_car_camera_height, z) + pitch)
+    # Return physical height base on the pixel_height
     
-    return x1, y1, x2, y2
+    physicalH = self.google_car_camera_height - gHeight + z * math.tan( ((math.pi * pixelH)/image_height) + (1/math.atan2(gHeight - self.google_car_camera_height, z)))
+   
+    return (pixelH, physicalH)
+
 
 
 def haversine_distance(lat1, lng1, lat2, lng2):
@@ -452,3 +537,193 @@ def array_haversine_distances(lat, lng, a, max_dist=None):
            np.square(np.sin((a[:,1]-lng)*math.pi/360.0)))
     dists = 2 * EARTH_RADIUS * np.arctan2(np.sqrt(aa), np.sqrt(1-aa))
   return dists
+
+
+# This function allows us to create a descending sorted list of contour areas.
+def contour_area(contours):
+     
+    # create an empty list
+    cnt_area = []
+     
+    # loop through all the contours
+    for i in range(0,len(contours),1):
+        # for each contour, use OpenCV to calculate the area of the contour
+        cnt_area.append(cv2.contourArea(contours[i]))
+ 
+    # Sort our list of contour areas in descending order
+    list.sort(cnt_area, reverse=True)
+    return cnt_area
+    
+def draw_bounding_box(contours, image, boxThreshold=1):
+    # Call our function to get the list of contour areas
+    sortedCntList = sort_contour_area(contours)
+    bndBoxes = []
+    # Loop through each contour of our image
+
+    cntL =  sortedCntList if boxThreshold >= len(sortedCntList) else sortedCntList[:boxThreshold] 
+
+    for cnt in cntL:
+             
+        # Use OpenCV boundingRect function to get the details of the contour
+        x,y,w,h = cv2.boundingRect(cnt)
+        bndBoxes.append(np.array([x, y, x+w, y+h]))
+        # Draw the bounding box
+        image=cv2.rectangle(image,(x,y),(x+w,y+h),(0,0,255),2)
+ 
+    return image, bndBoxes
+    
+def bSearch(arr, low, high, x):
+    """
+    arr: array of pixel x of top left corners
+    low: lower pointer (index)
+    high: higher pointer (index)
+    x: insert value for comparision
+    -------------------------------
+    RETURN the index that x just abit larger than arr[index].
+    """
+    if arr[low] > x:
+        return -1
+    
+    if arr[high] < x:
+        return high
+
+    if high >= low:
+
+        mid = (high + low) // 2
+
+        if arr[mid] == x or (x < arr[mid+1] and x > arr[mid]):
+            return mid
+        
+        elif arr[mid] > x:
+            return bSearch(arr, low, mid-1, x)
+
+        elif arr[mid] < x:
+            return bSearch(arr, mid+1, high, x)
+
+    else:
+        return -1
+
+def find_potential_bbox(bbArr, pixel, direction='v'):
+    """
+    bbArr (np.ndarray):  array of bounding box
+    pixel (any format): pixel coordination - x: row, y:col
+    direction (str): first sorted array base; either 'h' - horizontal for y OR 'v' vertical for the x
+    ------------------------------------------------------
+    RETURN: array of potential bounding boxes.
+    """
+    # Sort bounding box to prepared for the binary search of center pixel
+    
+    
+    bbArr = bbArr[bbArr[:, 0].argsort()] if direction == 'v' else bbArr[bbArr[:, 1].argsort()]
+
+    idx = bSearch(bbArr[:,0], 0,len(bbArr)-1, pixel[0]) if direction == 'v' else bSearch(bbArr[:,1], 0,len(bbArr)-1, pixel[1]) 
+
+    ### TO BE UPDATED: filtering out the bbox on the street
+
+    if idx >= len(bbArr) - 2:
+        return bbArr
+    
+    elif idx == -1:
+        return np.empty(0)
+    
+    else:
+        return bbArr[0:idx+2]
+
+    return np.empty(0)
+    
+def isInside(obj, box):
+    """
+    obj: pixel location of tree (x, y)
+    box: bounding box - 2 pixel points of top left and bottom right corners (x1,y1,x2,y2)
+    """
+
+    oX, oY = obj
+    tX, tY, bX, bY = box 
+
+    x_inRange = oX >= tX and oX <= bX
+    y_inRange = oY >= tY and oY <= bY
+
+    return x_inRange and y_inRange
+
+def find_bbox(bbArr, pixel):
+    """
+    bbArr (np.ndarray):  array of bounding box
+    pixel (any format): pixel coordination - x_: col, y|:row
+    ------------------------------------------------------
+    RETURN: list of bounding boxes that the pixel points laid/ close to inside.
+    """  
+    bbArr = np.array(bbArr) #covert to np array, incase
+    potentialArr = find_potential_bbox(bbArr,pixel)
+    bbList = []
+
+    if len(potentialArr) != 0:
+        for bb in potentialArr:
+            x1,y1, x2, y2 = bb
+            
+            if isInside(pixel,(x1,y1,x2,y2)):
+                bbList.append(bb)
+      
+      ## Adding bbox that closet to the pixel, incase the pxl pt is outside the box
+    if (len(bbList) == 0 and len(potentialArr) != 0):
+        bbList.extend(find_potential_bbox(bbArr,pixel)[-2:])
+        bbList.extend(find_potential_bbox(bbArr,pixel,'h')[-2:])
+    
+    return bbList
+
+def pxHeight_extract(bboxes):
+    hList = []
+    
+    for b in bboxes:
+        hList.append([b[3]-b[1],b])
+    
+    hArr = np.array(hList)
+    
+    return hArr[hArr[:,0].argsort()]
+
+def sort_contour_area(contours):
+    """Calculate and create a descending sorted list of contour areas.
+    Args:
+    contours: result of cv2.findContours
+
+    Returns:
+    cnt_arr: descending list of coutour areas. (only contour, not with area)
+    """
+    cnt_area = []
+    for cnt in contours:
+      # Calculate the area of the contour
+      cnt_area.append([cv2.contourArea(cnt), cnt])
+
+    cnt_area = np.array(cnt_area)
+    sortedArr = cnt_area[cnt_area[:, 0].argsort()][::-1]
+
+    return sortedArr[:,1]
+
+def get_segmentation_and_bbox(panoId, dTreeTH = 20):
+    """Calculate and create a descending sorted list of contour areas.
+	  Args:
+    panoId (str): id of pano image
+    -----------------------------------------
+    RETURN
+    seg_map (np.ndarray): map of different object in the image
+    contour (tuplet of list tuplet): contours of tree on images
+    bndBoxes (ndarray): array of bounding boxes sorted descending
+    """
+    ## TO BE UPDATED: apply retry here
+    full_pano_image = os.path.join(DATASET_DIRECTORY, "streetview", str(panoId) + "_z2.jpg")
+    seg_map = inference_segmentor(MODEL, full_pano_image)
+        
+    ## process the to generate mask of tree only - class is 8 (consistence)
+    treeMap = (np.array(seg_map)[0] == 8).astype(int)
+
+    maskImg = np.array((treeMap*255),dtype= 'u1') #Convert data to unit8 for image handling
+    grayImage = cv2.cvtColor(maskImg, cv2.COLOR_GRAY2BGR)
+
+    #get threshold image
+    ret,thresh_img = cv2.threshold(grayImage, 1, 255, 0)
+    contours, hierarchy = cv2.findContours(treeMap.astype('u1'), cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+
+    treeThresh = len(contours) - 1 if len(contours) < dTreeTH else dTreeTH
+    boxImg, bndBoxes = draw_bounding_box(contours, grayImage, treeThresh)
+    bndBoxes = bndBoxes[bndBoxes[:,1] <= STREET_THRESHOLD] ## Applied pixel street threshold
+
+    return seg_map, contours, bndBoxes

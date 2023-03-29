@@ -109,7 +109,8 @@ class ImageClassificationBase(nn.Module):
         images, labels = batch 
         out = self(images)                  # Generate predictions
         loss = F.cross_entropy(out, labels) # Calculate loss, Hints: the loss function can be changed to improve the accuracy
-        return loss
+        acc = accuracy(out, labels, (5)) 
+        return (loss, acc)
     
     def validation_step(self, batch):
         images, labels = batch 
@@ -126,8 +127,8 @@ class ImageClassificationBase(nn.Module):
         return {'val_loss': epoch_loss.item(), 'val_acc': epoch_acc.item()}
     
     def epoch_end(self, epoch, result):
-        print("Epoch [{}], train_loss: {:.4f}, val_loss: {:.4f}, val_acc: {:.4f}".format(
-            epoch, result['train_loss'], result['val_loss'], result['val_acc']))
+        print("Epoch [{}], train_loss: {:.4f}, train_acc: {:.4f}, val_loss: {:.4f}, val_acc: {:.4f}".format(
+            epoch, result['train_loss'], result['train_acc'], result['val_loss'], result['val_acc']))
 
 
  # To check wether Google Colab GPU has been assigned/not. 
@@ -213,10 +214,11 @@ def fit(epochs, lr, model, train_loader, val_loader, scheduler, opt_func=torch.o
     for epoch in range(epochs):
         # Training Phase 
         model.train()
-        train_losses = []
+        train_losses, train_acc = [], []
         for batch in tqdm(train_loader):
-            loss = model.training_step(batch)
+            loss, acc = model.training_step(batch)
             train_losses.append(loss)
+            train_acc.append(acc)
             loss.backward()
             optimizer.step()
             optimizer.zero_grad()
@@ -224,6 +226,7 @@ def fit(epochs, lr, model, train_loader, val_loader, scheduler, opt_func=torch.o
         # Validation phase
         result = evaluate(model, val_loader)
         result['train_loss'] = torch.stack(train_losses).mean().item()
+        result['train_acc'] = torch.stack(train_acc).mean().item()
         model.epoch_end(epoch, result)
         history.append(result)
         
@@ -245,24 +248,24 @@ def fit(epochs, lr, model, train_loader, val_loader, scheduler, opt_func=torch.o
 
 def continue_fit(epochs, lr, model, train_loader, val_loader, scheduler, optFunc=None, cpPath = None, startEpoch = 0):
     history = []
-    if optFunc is None:
-        optimizer = torch.optim.SGD(model.parameters(), lr)
-    else:
-        optimizer = optFunc
+
+    optimizer = torch.optim.SGD(model.parameters(), lr) if optFunc is None else optFunc
 
     for epoch in range(startEpoch, epochs):
         # Training Phase 
         model.train()
-        train_losses = []
+        train_losses, train_acc = [], []
         for batch in tqdm(train_loader):
-            loss = model.training_step(batch)
+            loss, acc = model.training_step(batch)
             train_losses.append(loss)
+            train_acc.append(acc)
             loss.backward()
             optimizer.step()
             optimizer.zero_grad()
         # Validation phase
         result = evaluate(model, val_loader)
         result['train_loss'] = torch.stack(train_losses).mean().item()
+        result['train_acc'] = torch.stack(train_acc).mean().item()
         model.epoch_end(epoch, result)
         history.append(result)
 
@@ -278,7 +281,7 @@ def continue_fit(epochs, lr, model, train_loader, val_loader, scheduler, optFunc
 
         torch.save(checkpoint, cpNameGen(cpPath, eNo=epoch))
         scheduler.step()
-        
+
     return history
 
 
